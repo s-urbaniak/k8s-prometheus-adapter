@@ -1,10 +1,11 @@
 REGISTRY?=directxman12
 IMAGE?=k8s-prometheus-adapter
-TEMP_DIR:=$(shell mktemp -d)
 ARCH?=$(shell go env GOARCH)
 ALL_ARCH=amd64 arm arm64 ppc64le s390x
 ML_PLATFORMS=linux/amd64,linux/arm,linux/arm64,linux/ppc64le,linux/s390x
-OUT_DIR?=./_output
+OUT_DIR?=$(PWD)/_output
+
+OPENAPI_PATH=$(GOPATH)/src/k8s.io/kube-openapi
 
 VERSION?=latest
 GOIMAGE=golang:1.13
@@ -34,23 +35,19 @@ all: $(OUT_DIR)/$(ARCH)/adapter
 src_deps=$(shell find pkg cmd -type f -name "*.go")
 $(OUT_DIR)/%/adapter: $(src_deps)
 	CGO_ENABLED=0 GOARCH=$* go build -mod vendor -tags netgo -o $(OUT_DIR)/$*/adapter github.com/directxman12/k8s-prometheus-adapter/cmd/adapter
-	
-docker-build:
-	cp deploy/Dockerfile $(TEMP_DIR)
-	cd $(TEMP_DIR) && sed -i "s|BASEIMAGE|$(BASEIMAGE)|g" Dockerfile
 
-	docker run -it -v $(TEMP_DIR):/build -v $(shell pwd):/go/src/github.com/directxman12/k8s-prometheus-adapter -e GOARCH=$(ARCH) $(GOIMAGE) /bin/bash -c "\
-		CGO_ENABLED=0 go build -tags netgo -o /build/adapter github.com/directxman12/k8s-prometheus-adapter/cmd/adapter"
+docker-build: $(OUT_DIR)/Dockerfile
+	docker run -it -v $(OUT_DIR):/build -v $(PWD):/go/src/github.com/directxman12/k8s-prometheus-adapter -e GOARCH=$(ARCH) $(GOIMAGE) /bin/bash -c "\
+		CGO_ENABLED=0 go build -tags netgo -o /build/$(ARCH)/adapter github.com/directxman12/k8s-prometheus-adapter/cmd/adapter"
 
-	docker build -t $(REGISTRY)/$(IMAGE)-$(ARCH):$(VERSION) $(TEMP_DIR)
-	rm -rf $(TEMP_DIR)
+	docker build -t $(REGISTRY)/$(IMAGE)-$(ARCH):$(VERSION) --build-arg ARCH=$(ARCH) --build-arg BASEIMAGE=$(BASEIMAGE) $(OUT_DIR)
 
-build-local-image: $(OUT_DIR)/$(ARCH)/adapter
-	cp deploy/Dockerfile $(TEMP_DIR)
-	cp  $(OUT_DIR)/$(ARCH)/adapter $(TEMP_DIR)
-	cd $(TEMP_DIR) && sed -i "s|BASEIMAGE|scratch|g" Dockerfile
-	docker build -t $(REGISTRY)/$(IMAGE)-$(ARCH):$(VERSION) $(TEMP_DIR)
-	rm -rf $(TEMP_DIR)
+$(OUT_DIR)/Dockerfile: deploy/Dockerfile
+	mkdir -p $(OUT_DIR)
+	cp deploy/Dockerfile $(OUT_DIR)/Dockerfile
+
+build-local-image: $(OUT_DIR)/Dockerfile $(OUT_DIR)/$(ARCH)/adapter
+	docker build -t $(REGISTRY)/$(IMAGE)-$(ARCH):$(VERSION) --build-arg ARCH=$(ARCH) --build-arg BASEIMAGE=scratch $(OUT_DIR)
 
 push-%:
 	$(MAKE) ARCH=$* docker-build
@@ -82,3 +79,8 @@ go-mod:
 	go mod verify
 
 verify: verify-gofmt go-mod test
+
+pkg/api/generated/openapi/zz_generated.openapi.go:
+	GO111MODULE=off go get -d k8s.io/kube-openapi || true
+	rm -rf pkg/api/generated/openapi
+	cd $(OPENAPI_PATH) && go run ./cmd/openapi-gen/openapi-gen.go --logtostderr -i k8s.io/metrics/pkg/apis/custom_metrics,k8s.io/metrics/pkg/apis/custom_metrics/v1beta1,k8s.io/metrics/pkg/apis/custom_metrics/v1beta2,k8s.io/metrics/pkg/apis/external_metrics,k8s.io/metrics/pkg/apis/external_metrics/v1beta1,k8s.io/metrics/pkg/apis/metrics,k8s.io/metrics/pkg/apis/metrics/v1beta1,k8s.io/apimachinery/pkg/apis/meta/v1,k8s.io/apimachinery/pkg/api/resource,k8s.io/apimachinery/pkg/version,k8s.io/api/core/v1 -p github.com/directxman12/k8s-prometheus-adapter/pkg/api/generated/openapi -O zz_generated.openapi -r /dev/null
